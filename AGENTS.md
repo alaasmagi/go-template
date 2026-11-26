@@ -20,8 +20,8 @@ Before implementing:
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
-- Reuse existing code and shared packages - do not reinvent what already exists.
-- Never add a new dependency (NuGet, npm, or any other package) without asking me first.
+- Reuse existing code and the standard library - do not reinvent what already exists.
+- Never add a new dependency (Go module, npm, or any other package) without asking me first.
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
@@ -37,13 +37,13 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 The test: every changed line should trace directly to the request.
 
 **Comments - keep them minimal:**
-- At most one short doc comment at the top of a class or interface (C#: `/// <summary>`, TS: `/** ... */`) saying what it is for.
-- No doc comments on every method/property, no comments that repeat what the code says, no commented-out code.
+- At most one short doc comment on a package or exported type (Go: `// Name ...`, TS: `/** ... */`) saying what it is for.
+- No doc comments on every function/field, no comments that repeat what the code says, no commented-out code.
 - An inline comment only when the *why* isn't obvious from the code.
 
-**Modifiers - only what is needed:**
-- Don't add modifiers or keywords "just in case" to classes, interfaces, records, methods, properties or anything else - e.g. `sealed`, `partial`, `virtual`, `abstract`, `static`, `required`, `new`.
-- Use one only when the code actually needs it (it doesn't compile or behave correctly without it, or there is a concrete reason you can name). Match what the surrounding code already does.
+**Keep things unexported by default:**
+- Don't export identifiers, add interfaces, generics, struct tags or options "just in case".
+- Export only what another package actually uses. Match what the surrounding code already does.
 
 **Language:** everything written into the project is in English by default - code, identifiers, comments, UI text, error messages, docs, commit messages and PR texts - unless Section 5 says otherwise for this project.
 
@@ -74,20 +74,15 @@ Run the relevant build/test/lint commands (Section 6) before saying a step is do
 ## 6. Stack & Commands
 <!-- Keep only the layers this project has. -->
 
-### Backend (.NET)
-- .NET 10, built on the `alaasmagi.Base.*` packages (Section 7). ASP.NET Core MVC + API in one host, EF Core with PostgreSQL, Keycloak, Redis, RabbitMQ, GlitchTip.
-- Records for DTOs/value objects, classes for domain entities.
-- Async all the way - never `.Result` / `.Wait()`.
-- Build: `dotnet build <solution>.sln`
-- Run: `dotnet run --project Web/Web.csproj`
-- Test: `dotnet test <solution>.sln`
-- Add a migration (allowed): `dotnet ef migrations add <Name> --project DataAccess/DataAccess.csproj --startup-project Web/Web.csproj --context AppDbContext`
-- Never run `dotnet ef database update` - I apply migrations (Section 9).
-- **Cleanup after building (macOS) - HARD rule:** builds on macOS can create files/folders whose name contains a literal backslash (e.g. one folder named `bin\Debug` instead of `bin/Debug`). Before finishing any task where you ran a build or tests, remove them:
-  ```
-  find . -path ./.git -prune -o -name '*\\*' -prune -print -exec rm -rf {} +
-  ```
-  Mention in the change summary if anything was removed.
+### Backend (Go)
+- Go 1.25 (see `go.mod`). Standard library first: `log/slog` for logging, `net/http` with Go 1.22+ method/pattern routing (`mux.HandleFunc("GET /health", ...)`).
+- `context.Context` is the first argument of every function that does I/O (database, network, messaging). Never store a context in a struct.
+- Build: `go build ./...`
+- Vet: `go vet ./...`
+- Test: `go test ./...`
+- Run: `go run ./cmd/server`
+- Generate data access code: `sqlc generate` (after changing SQL queries or schema).
+- Never apply migrations to a database - I apply them (Section 9).
 
 ### Frontend (<framework>)
 - <framework, language, state management>
@@ -104,8 +99,8 @@ Run the relevant build/test/lint commands (Section 6) before saying a step is do
 - Test: `<cmd>`
 - New logic (stores, services, utils, hooks) gets unit tests in the same task. A task is not done until they exist and pass.
 
-### UI (Frontend, Mobile & backend MVC views) - HARD rules
-These rules apply to every UI, including Razor Pages views in the backend Web/MVC layer.
+### UI (Frontend, Mobile & server-rendered backend views) - HARD rules
+These rules apply to every UI, including any server-rendered views in the backend.
 - Use only my design system (based on Figma components): its components and tokens (colors, typography, spacing, radii, etc.). No other UI libraries, no hardcoded colors/sizes, no ad-hoc styles outside the tokens.
 - Exception: the accent color is project-specific. It is overridden in exactly one place (`<accent-token-location>`), for both light and dark mode. Everything else uses the accent token - never hardcode the accent value in components.
 - The design for a feature is made in Figma first and imported into `<design-folder>`. Before implementing any UI, find the matching design there and build exactly from it.
@@ -113,74 +108,56 @@ These rules apply to every UI, including Razor Pages views in the backend Web/MV
 - If the design needs a component the design system doesn't have yet - stop and ask. Don't create a one-off replacement.
 
 ## 7. Backend Architecture (layered)
-The layer boundaries below are strict. Never add a project reference that breaks them. If a task seems to need one, stop and ask.
+The package boundaries below are strict. Never add an import that breaks them. If a task seems to need one, stop and ask.
 
-### Layers and dependencies
-| Layer | Contains | May depend on |
+### Layout and dependencies
+The layers mirror the .NET template. There is no separate DTO package: persistence types live in `dataaccess` and web DTOs in `web/api`, each next to its mappers.
+
+| Package | Contains | May import |
 |---|---|---|
-| **Domain** | Core entities with their validation rules; enums used across the app | `alaasmagi.Base.*` only |
-| **Contracts** | Interfaces only, in three folders: `Application/`, `DataAccess/`, `External/` | Domain |
-| **Application** | Business logic; implements `Contracts/Application` | Domain, Contracts |
-| **DTO** | `DataAccess/` (`...Entity` + `Mappers/`), `Web/` (`...Dto` + `Mappers/`) | Domain |
-| **DataAccess** | `AppDbContext`, `AppDbContextFactory`, UoW, CRUD/repositories; implements `Contracts/DataAccess` | Domain, Contracts, DTO (`DataAccess/` only) |
-| **External** | Concrete third-party implementations, one folder per concern (`Cache/`, `RabbitMQ/`, ...); implements `Contracts/External` | Domain, Contracts |
-| **Web** | `API/` (REST endpoints), `MVC/` (Razor Pages built on Web DTOs) | Domain, Contracts, DTO (`Web/` only). DataAccess/External only for DI registration in `Configuration/` |
-| **Tests** | All unit tests | Any layer |
+| `cmd/server` | `main` - loads config, builds dependencies, wires and starts everything (like `Program.cs`). No logic. | Anything |
+| `internal/domain` | Core entities with their validation rules; sentinel errors; enums used across the app | Standard library only |
+| `internal/contracts` | Interfaces only: services, repositories, external adapters. Provider-agnostic names and types | `domain` |
+| `internal/application` | Business logic (services); implements the service interfaces in `contracts` | `domain`, `contracts` |
+| `internal/dataaccess` | PostgreSQL repositories and sqlc-generated rows; maps rows <-> domain; implements the repository interfaces in `contracts` | `domain`, `contracts` |
+| `internal/external/<concern>` | Concrete third-party adapters, one package per concern (`cache`, `rabbitmq`, ...); implements the external interfaces in `contracts` | `domain`, `contracts` |
+| `internal/web/api` | HTTP handlers, request/response DTOs and their mappers (DTO <-> domain), router and server lifecycle | `domain`, `contracts` |
+| `internal/config` | `.env` loader and the `Config` struct, loaded once at startup | Standard library only |
+| `internal/platform/<concern>` | Cross-cutting infrastructure: logging, error reporting | Standard library and `config` |
+| `tests/` | Integration tests (optional) | Anything |
 
 ### Naming
 - Domain entity: no suffix - `AppUser`
-- Database entity: `...Entity` - `AppUserEntity`
-- Web/presentation DTO: `...Dto` - `AppUserDto`
+- Web DTO: `...Dto` - `AppUserDto`
+- Persistence rows: the types sqlc generates in `dataaccess`. Generated files are never edited by hand.
 
 ### Rules
-- **Domain entities are the only currency between layers.** Application methods take and return domain entities only. Repositories take and return domain entities only.
-- **Mapping happens only at the edges:** DataAccess maps `...Entity` <-> domain, Web maps `...Dto` <-> domain. Map before calling Application, map after it returns.
-- **Every mapper implements `IMapper<...>` from `Base.Contracts.DTO`** (exact generic signature depends on the Base version in use). No ad-hoc mapping inside controllers, pages, services or repositories.
-- **Web returns only `...Dto` data** - in API and MVC alike. Never expose domain entities or `...Entity` types from Web.
-- **Contracts are provider-agnostic.** No third-party types in signatures, generic names only: `ICacheService.SaveAsync`, not `IRedisService.SaveToRedisAsync`.
-- **Provider-specific names and types (Redis, RabbitMQ, ...) exist only in External.**
-- **Business validation rules live on domain entities**, not in DTOs, controllers or pages.
-- **Persistence constraints** (`[Required]`, `[MaxLength(...)]`) are data annotations on the `...Entity` class. `AppDbContext` holds only schema, table, index and relationship configuration.
-- **DI registration lives in Web's `Configuration/` folder** as extension methods. `Program.cs` only calls them and stays as small as possible.
-- Layer interfaces in Contracts are required even when there is only one implementation - Section 2's "no abstractions for single-use code" does not apply to layer boundaries.
+- **Dependency direction:** `domain` depends on nothing; `contracts` on `domain`; `application`, `dataaccess` and `external` on `domain` + `contracts`; `web` on `domain` + `contracts`. Only `cmd/server` imports `dataaccess`/`external`/`application` to wire them. Never import across these boundaries otherwise.
+- **Interfaces live in `contracts`**, never next to their implementation or in the consumer. Contract interfaces are required even when there is only one implementation - Section 2's "no abstractions for single-use code" does not apply to layer boundaries.
+- **Domain entities are the only currency between layers.** Services and repositories take and return domain entities only.
+- **Mapping happens only at the edges:** `dataaccess` maps rows <-> domain, `web/api` maps DTOs <-> domain. Map before calling a service, map after it returns. No ad-hoc mapping inside handlers, services or repositories - use the mapper functions.
+- **Web returns only `...Dto` data.** Never expose domain entities or rows from `web`.
+- **Contracts are provider-agnostic.** No third-party types in signatures, generic names only: `Cache.Set`, not `Redis.SaveToRedis`. Provider-specific names and types (Postgres, RabbitMQ, Redis, ...) exist only in `dataaccess`, `external` and `platform`.
+- **Business validation rules live on domain entities**, not in DTOs, handlers or repositories.
+- **Wiring lives only in `cmd/server`.** Keep `main` short: config, constructors, start.
 
-### Base package (`alaasmagi.Base.*`)
-Use what the package already provides before writing anything new:
-- **Domain entities** inherit from a `Base.Domain` class (`BaseEntity...`, `...WithMeta`, `...Concurrency`, `...SoftDelete`, `BaseEntityUser...` variants). Identity users/roles inherit from `Base.Domain.Identity`.
-- **Repositories** inherit from `BaseRepository<...>` / `BaseRepositorySoftDelete<...>`; the UoW inherits `BaseUow<AppDbContext>`. **Services** inherit from `BaseService<...>` / `BaseServiceSoftDelete<...>`.
-- **Repositories never save.** They stage changes; the service commits through the UoW.
-- **Metadata** (`CreatedAt`, `CreatedBy`, `UpdatedAt`, `UpdatedBy`) is set by the repository base classes - never set it manually.
-- **Soft delete** goes through the `SoftDelete` variants - never implement your own `IsDeleted` handling.
-- **User scoping** is automatic for entities implementing `IBaseEntityUserId<TKey>` - never add manual user filters on top.
-- **Expected failures return `IMethodResponse<T>`** (`MethodResponse`, `Error`, `ErrorDefaults` from `Base.DTO`) - no custom result/error types. Exceptions (`BaseException` / `HttpException`) only for unexpected failures.
-- **Cache:** callers use `IAppCache` (incl. `GetOrSetAsync` for cache-aside); the Redis store in `External/Cache` inherits `BaseCache`.
-- **Messaging:** publish with `BaseEventEnvelope<TContent>`, consume with `RabbitMqConsumerBase<TContent>` (ack or reject) or `RabbitMqDeliveryConsumerBase<TContent>` (ack, requeue or reject per message); RabbitMQ specifics only in External/`Configuration/`.
-- **Keycloak:** auth, role claims and admin API go through `Base.Keycloak` helpers - never hand-write JWT/OIDC setup.
-- All `alaasmagi.Base.*` packages are kept on the same version. Updating one means updating all.
-- If the base package is missing something that would be reusable across projects, tell me instead of building it locally - it may belong in the package.
-- Naming in this file wins over the package README examples (e.g. `TodoEntity`, not `TodoDbEntity`).
+### Errors
+- Return `error`; never panic for expected failures. Panics only for programmer errors that cannot happen at runtime.
+- Expected failures are sentinel errors (`var ErrNotFound = errors.New("...")`) declared in `domain`, so every layer can check them with `errors.Is`. Wrap with `fmt.Errorf("...: %w", err)` to add context.
+- No custom error type hierarchies unless asked.
+- `web/api` maps sentinel errors to status codes, `external/rabbitmq` to message dispositions; `dataaccess` maps driver errors to sentinel errors.
+- Never swallow an error: handle it, return it, or report it (Section 8).
 
-### Adding a new feature
-`AppUser` is the reference implementation - copy its pattern across all layers:
-1. Domain model - `Domain/`
-2. Persistence entity + mapper - `DTO/DataAccess/`, `DTO/DataAccess/Mappers/`
-3. Web DTO + mapper - `DTO/Web/`, `DTO/Web/Mappers/`
-4. Repository + service interfaces - `Contracts/DataAccess/`, `Contracts/Application/`
-5. Repository + service implementations - `DataAccess/`, `Application/`
-6. API controller - `Web/API/Controllers/`
-7. DI wiring - `Web/Configuration/ServiceConfiguration.cs`
-8. Migration (if persistence changed) + unit tests
-
-Write custom behavior only where the feature differs from generic CRUD or messaging.
+### Tests
+- Standard `testing` package only, table-driven, in `_test.go` files next to the code. Integration tests may go in `tests/`.
+- HTTP handlers are tested with `net/http/httptest`.
+- Anything new that contains logic (domain validation, services, mappers, repositories, external adapters, config) gets tests in the same task.
+- A task is not done until the new tests exist and `go build ./...`, `go vet ./...` and `go test ./...` pass.
 
 ### API
 - Routes are URL-versioned and kebab-case plural: `/api/v1/<resources>`.
-- Every API controller uses the existing named rate-limit policy.
-- `PUT` and `DELETE` use optimistic concurrency: current `ConcurrencyToken` in the `If-Match` header.
-
-### Tests
-- Anything new that contains logic (domain validation, application services, mappers, repositories, external implementations) gets unit tests in the Tests project in the same task.
-- A task is not done until the new tests exist and `dotnet test` passes.
+- Every API route uses the shared rate limiter.
+- `PUT` and `DELETE` use optimistic concurrency: current concurrency token in the `If-Match` header.
 
 ## 8. Platform Integration
 <!-- Only if the project uses the shared hubs. -->
@@ -192,22 +169,23 @@ Write custom behavior only where the feature differs from generic CRUD or messag
 ### Hubs
 - Auth goes through Keycloak (realm: `<app-slug>`). Never implement custom auth.
 - **API authentication uses JWT bearer tokens issued by Keycloak only.** No cookies, API keys, basic auth or any other scheme on API endpoints.
-- **MVC views** use Keycloak OpenID Connect login with a cookie session - the only exception. Never use the cookie scheme on API endpoints or the bearer scheme on MVC views.
-- Async communication goes through RabbitMQ using the `Base.Message` envelope. Do not define a new envelope or change exchange/queue topology in code - topology is set up manually.
-- **Errors:** no new exception hierarchies unless asked (see Section 7). Errors are reported to error-hub (GlitchTip), never only to the console. No `try/catch` unless the code can actually handle the error - never swallow exceptions.
+- **Server-rendered views** (if any) use Keycloak OpenID Connect login with a cookie session - the only exception. Never use the cookie scheme on API endpoints or the bearer scheme on views.
+- Async communication goes through RabbitMQ using the event envelope from the event contract. Do not define a new envelope or change exchange/queue topology in code - topology is set up manually.
+- **Errors:** see Section 7. Errors are reported to error-hub (GlitchTip), never only to the console. Don't `recover()` unless the code can actually handle the panic - never swallow errors.
 - Email is sent via email-hub commands (`<app-slug>.<action>`), never directly from the app.
 - Config comes from environment variables (`APP_SLUG` etc.) - see Section 10. Never hardcode secrets; never commit `.env`.
 
 ## 9. Version Control - HARD Rules
 - Never run `git commit`, `git push`, `git merge`, `git pull`, `git rebase` or `git reset`.
 - Creating a new branch (`git switch -c`) is allowed when starting a task on `main`/`develop`. Name: `<feature|fix|chore>/<2-4-keywords>`, lowercase, hyphen-separated. If it already exists, stop and ask.
-- Never run SQL or migrations against a real database. Generate migrations; I apply them.
+- Never run SQL or migrations against a real database. Write migrations; I apply them.
 - Never put `[DEPLOY]` in a suggested commit message - it triggers a production deploy. I add it myself.
 - Commit messages and PR texts go in the chat only, never into files.
 
 ## 10. Environment Variables - HARD Rules
 - Environment variables live only in `.env`. Never put config values anywhere else (no hardcoded defaults in code, no inline values in compose files or workflows).
-- Only exception: `appsettings*.json` may contain non-secret framework settings like `Logging` (log levels). Anything secret or environment-specific (connection strings, URLs, credentials, keys) goes in `.env`.
+- All variables are read in `internal/config` only. Other packages receive values from `Config`, never call `os.Getenv` themselves.
+- A missing or invalid required value fails at startup with an error naming the variable.
 - `.env.example` is a copy of `.env` with the same keys in the same order and all values empty.
 - `.env` and `.env.example` must ALWAYS be in sync. Every added, renamed or removed variable is changed in both files in the same step.
 - Format is exactly `UPPER_SNAKE_CASE=value` - no spaces around `=`, no other naming style. In `.env.example`: `UPPER_SNAKE_CASE=`
